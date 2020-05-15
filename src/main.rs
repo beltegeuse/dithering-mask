@@ -17,6 +17,82 @@ use image::*;
 // Parallel processing
 use rayon::prelude::*;
 
+// FFT
+pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32], size: usize) {
+    let inv_size = 1.0 / size as f32;
+
+    // For the sum
+    struct Result {
+        pub real: f32,
+        pub img: f32,
+    }
+    impl std::iter::Sum for Result {
+        fn sum<I>(iter: I) -> Self
+        where
+            I: Iterator<Item = Self>,
+        {
+            iter.fold(
+                Self {
+                    real: 0.0,
+                    img: 0.0,
+                },
+                |a, b| Self {
+                    real: a.real + b.real,
+                    img: a.img + b.img,
+                },
+            )
+        }
+    }
+
+    // Compute FFT
+    for i in 0..size {
+        let constant = 2.0 * std::f32::consts::PI * i as f32 * inv_size;
+        let res = (0..size)
+            .map(|j| {
+                let cos_constant = (j as f32 * constant).cos();
+                let sin_constant = (j as f32 * constant).sin();
+                Result {
+                    real: real[j] * cos_constant + img[j] * sin_constant,
+                    img: -real[j] * sin_constant + img[j] * cos_constant,
+                }
+            })
+            .sum::<Result>();
+        out_real[i] = res.real * inv_size;
+        out_img[i] = res.img * inv_size;
+    }
+}
+
+pub fn fft2d(real: &[f32], size: usize) -> Vec<f32>
+{
+  let size_sqr = size * size;
+
+  let mut real_temp_1 = (0..size_sqr).map(|i|  real[i] * (-1.0 as f32).powi(((i % size) + (i / size)) as i32)).collect::<Vec<f32>>();
+  let mut img_temp_1 = vec![0.0; size_sqr];
+  let mut real_temp_2 = vec![0.0; size_sqr];
+  let mut img_temp_2 = vec![0.0; size_sqr];
+  
+  // Horizontal
+  for i in 0..size {
+    let index = i * size;
+    fft1d(&real_temp_1[index..index+size], &img_temp_1[index..index+size], 
+        &mut real_temp_2[index..index+size], &mut img_temp_2[index..index+size], size);
+  }
+
+  // Rotate image & Vertical
+  for i in 0..size_sqr {
+    real_temp_1[i] = real_temp_2[(i % size) * size + (i / size)];
+    img_temp_1[i] = img_temp_2[(i % size) * size + (i / size)];
+  }
+  for i in 0..size {
+    let index = i * size;
+    fft1d(&real_temp_1[index..index+size], &img_temp_1[index..index+size], 
+        &mut real_temp_2[index..index+size], &mut img_temp_2[index..index+size], size);
+  }
+  
+  // Normalize and output
+  (0..size_sqr).map(|i| ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt()  + 1.0).ln() * 50.0).collect::<Vec<f32>>()
+}
+
 // Functions to write output mask
 pub fn save_ldr_image(img: &[f32], size: (usize, usize), imgout_path_str: &str) {
     let mut image_ldr = DynamicImage::new_rgb8(size.0 as u32, size.1 as u32);
@@ -136,8 +212,20 @@ fn main() {
             )
             .arg(
                 Arg::with_name("png")
-                    .short("p")
+                    .short("l")
                     .help("save in png (otherwise save in pfm by default)"),
+            )
+            .arg(
+                Arg::with_name("fft")
+                    .short("f")
+                    .help("do the fft"),
+            )
+            .arg(
+                Arg::with_name("probabilities")
+                    .short("p")
+                    .takes_value(true)
+                    .help("probability to accept worst move (init:final)")
+                    .default_value("0.1:0.001"),
             )
             .get_matches();
 
@@ -166,11 +254,28 @@ fn main() {
     };
     // -- Optimization
     let iteration = value_t_or_exit!(matches.value_of("iteration"), i32);
+    let probability = value_t_or_exit!(matches.value_of("probabilities"), String);
+    let probability = probability
+        .split(":")
+        .into_iter()
+        .map(|v| v.parse::<f32>().expect("f32 for probabilities"))
+        .collect::<Vec<_>>();
+    if probability.len() != 2 {
+        panic!("the temperature have to be formated as: 0.01:0.001 (init:end)");
+    }
+    if probability[0] < probability[1] {
+        panic!(
+            "First probability {} need to be higher to final one {}",
+            probability[0], probability[1]
+        );
+    }
     // -- Debug
     let output_iter = match matches.value_of("intermediate") {
         None => None,
         Some(v) => Some(v.parse::<i32>().expect(&format!("{} is not an i32", v))),
     };
+    let fft = matches.is_present("fft");
+
     const SIGMA_I: f32 = 2.1;
     const SIGMA_S: f32 = 1.0;
 
@@ -277,15 +382,11 @@ fn main() {
     // Note that this information is informative only
     // as total energy is never used in our optimization process
     info!("Compute total energy ...");
-    let mut energy = 0.0;
-    for d in 0..dimension {
-        for y in 0..size {
-            for x in 0..size {
-                energy += energy_pixel((x, y, d));
-            }
-        }
-    }
-    energy /= 2.0; // TODO: For now pair are counted twice
+    let mut energy = index_order
+        .par_iter()
+        .map(|(x, y, d)| energy_pixel((*x, *y, *d)))
+        .sum::<f32>()
+        * 0.5;
     info!("Total energy: {}", energy);
 
     //////////////////////
@@ -293,10 +394,8 @@ fn main() {
     let mut delta_avg: f32 = 1.0;
     let mut total_accepted = 0;
     // Temperature
-    const P_1: f32 = 0.7; // Initial prob to accept a swap
-    const P_FINAL: f32 = 0.001; // Final prob to accept a swap
-    let t_1: f32 = -1.0 / P_1.ln();
-    let t50: f32 = -1.0 / P_FINAL.ln();
+    let t_1: f32 = -1.0 / probability[0].ln();
+    let t50: f32 = -1.0 / probability[1].ln();
     let frac: f32 = (t50 / t_1).powf(1.0 / (iteration - 1) as f32);
     let mut temp = t_1; // The current temperature
     for t in 0..iteration {
@@ -310,8 +409,19 @@ fn main() {
                         &img[0..slice_size],
                         &img[slice_size..(2 * slice_size)],
                         (size as usize, size as usize),
-                        &format!("{}_{}_.{}", output, t, ext),
+                        &format!("{}_{}.{}", output, t, ext),
                     );
+
+                    if fft {
+                        let fft_r = fft2d( &img[0..slice_size], size as usize);
+                        let fft_g = fft2d( &img[0..slice_size], size as usize);
+                        save_img_2d(
+                            &fft_r[..],
+                            &fft_g[..],
+                            (size as usize, size as usize),
+                            &format!("{}_fft_{}.{}", output, t, ext),
+                        );
+                    }
                 } else {
                     // Take the first dimension by default
                     save_img(
@@ -319,6 +429,15 @@ fn main() {
                         (size as usize, size as usize),
                         &format!("{}_{}_.{}", output, t, ext),
                     );
+
+                    if fft {
+                        let fft_r = fft2d( &img[0..slice_size], size as usize);
+                        save_img(
+                            &fft_r[..],
+                            (size as usize, size as usize),
+                            &format!("{}_fft_{}.{}", output, t, ext),
+                        );
+                    }
                 }
             }
         }
@@ -390,7 +509,7 @@ fn main() {
                 save_img(
                     &img[d_beg..d_beg + (size * size) as usize],
                     (size as usize, size as usize),
-                    &format!("{}_{}_.{}", output, d, ext),
+                    &format!("{}_{}.{}", output, d, ext),
                 );
             }
         }

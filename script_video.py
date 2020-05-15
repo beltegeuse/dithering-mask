@@ -15,6 +15,9 @@ def save_video(clip, name):
 	# Veryslow: Quite depending in term of CPU usage
 	clip.write_videofile("{}.mp4".format(name), codec='libx264', ffmpeg_params=[ '-preset', 'veryslow', '-crf', '0'], bitrate=None)
 
-NUMBER_RUN = 430
-clip = make_clip(["dim2_{}_.png".format(i) for i in range(NUMBER_RUN)],"")
+NUMBER_RUN = 128
+NAME = "dim64_2"
+clip_img = make_clip(["{}_{}.png".format(NAME, i) for i in range(NUMBER_RUN)],"")
+clip_fft = make_clip(["{}_fft_{}.png".format(NAME, i) for i in range(NUMBER_RUN)],"")
+clip = clips_array([[clip_img, clip_fft]])
 save_video(clip, "dim2")
