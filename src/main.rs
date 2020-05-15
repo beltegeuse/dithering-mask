@@ -306,9 +306,8 @@ fn main() {
         for i in 0..(size * size * dimension) as usize {
             img[i] = (i as f32 + offset) / (size * size * dimension) as f32;
         }
-        img.shuffle(&mut rng);    
+        img.shuffle(&mut rng);
     }
-    
     // Create vector of pixel coordinate [(x,y,d), ...]
     let mut index = (0..size * size * dimension)
         .map(|v| {
@@ -561,7 +560,7 @@ fn main() {
                 );
 
                 if fft {
-                    let fft_r = fft2d(&img[0..slice_size], size as usize);
+                    let fft_r = fft2d(&img[d_beg..d_beg + (size * size) as usize], size as usize);
                     save_img(
                         &fft_r[..],
                         (size as usize, size as usize),
@@ -572,7 +571,7 @@ fn main() {
         }
     }
 
-    // Dump output (float map) 
+    // Dump output (float map)
     {
         let file = File::create(Path::new(&format!("{}.mask", output))).unwrap();
         let mut file = BufWriter::new(file);
@@ -581,7 +580,7 @@ fn main() {
         for d in 0..dimension {
             for y in 0..size {
                 for x in 0..size {
-                    let p = img[get_index((x,y,d))];
+                    let p = img[get_index((x, y, d))];
                     file.write_f32::<LittleEndian>(p.abs()).unwrap();
                 }
             }
