@@ -427,7 +427,7 @@ fn main() {
                     save_img(
                         &img[0..(size * size) as usize],
                         (size as usize, size as usize),
-                        &format!("{}_{}_.{}", output, t, ext),
+                        &format!("{}_{}.{}", output, t, ext),
                     );
 
                     if fft {
