@@ -62,35 +62,51 @@ pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32
     }
 }
 
-pub fn fft2d(real: &[f32], size: usize) -> Vec<f32>
-{
-  let size_sqr = size * size;
+pub fn fft2d(real: &[f32], size: usize) -> Vec<f32> {
+    let size_sqr = size * size;
 
-  let mut real_temp_1 = (0..size_sqr).map(|i|  real[i] * (-1.0 as f32).powi(((i % size) + (i / size)) as i32)).collect::<Vec<f32>>();
-  let mut img_temp_1 = vec![0.0; size_sqr];
-  let mut real_temp_2 = vec![0.0; size_sqr];
-  let mut img_temp_2 = vec![0.0; size_sqr];
-  
-  // Horizontal
-  for i in 0..size {
-    let index = i * size;
-    fft1d(&real_temp_1[index..index+size], &img_temp_1[index..index+size], 
-        &mut real_temp_2[index..index+size], &mut img_temp_2[index..index+size], size);
-  }
+    let mut real_temp_1 = (0..size_sqr)
+        .map(|i| real[i] * (-1.0 as f32).powi(((i % size) + (i / size)) as i32))
+        .collect::<Vec<f32>>();
+    let mut img_temp_1 = vec![0.0; size_sqr];
+    let mut real_temp_2 = vec![0.0; size_sqr];
+    let mut img_temp_2 = vec![0.0; size_sqr];
 
-  // Rotate image & Vertical
-  for i in 0..size_sqr {
-    real_temp_1[i] = real_temp_2[(i % size) * size + (i / size)];
-    img_temp_1[i] = img_temp_2[(i % size) * size + (i / size)];
-  }
-  for i in 0..size {
-    let index = i * size;
-    fft1d(&real_temp_1[index..index+size], &img_temp_1[index..index+size], 
-        &mut real_temp_2[index..index+size], &mut img_temp_2[index..index+size], size);
-  }
-  
-  // Normalize and output
-  (0..size_sqr).map(|i| ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt()  + 1.0).ln() * 50.0).collect::<Vec<f32>>()
+    // Horizontal
+    for i in 0..size {
+        let index = i * size;
+        fft1d(
+            &real_temp_1[index..index + size],
+            &img_temp_1[index..index + size],
+            &mut real_temp_2[index..index + size],
+            &mut img_temp_2[index..index + size],
+            size,
+        );
+    }
+
+    // Rotate image & Vertical
+    for i in 0..size_sqr {
+        real_temp_1[i] = real_temp_2[(i % size) * size + (i / size)];
+        img_temp_1[i] = img_temp_2[(i % size) * size + (i / size)];
+    }
+    for i in 0..size {
+        let index = i * size;
+        fft1d(
+            &real_temp_1[index..index + size],
+            &img_temp_1[index..index + size],
+            &mut real_temp_2[index..index + size],
+            &mut img_temp_2[index..index + size],
+            size,
+        );
+    }
+
+    // Normalize and output
+    (0..size_sqr)
+        .map(|i| {
+            ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt() + 1.0).ln()
+                * 50.0
+        })
+        .collect::<Vec<f32>>()
 }
 
 // Functions to write output mask
@@ -333,10 +349,14 @@ fn main() {
                     } else {
                         let current_v = img[get_index((*x, *y, *d))];
                         // Here compute the cost
-                        // --- Distance
-                        let sqr_dist_1 = (x - p1.0).pow(2) + (y - p1.1).pow(2) + (d - p1.2).pow(2);
+                        // --- Distance (with cycle mapping)
+                        let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
+                            + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
+                            + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
                         let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-                        let sqr_dist_2 = (x - p2.0).pow(2) + (y - p2.1).pow(2) + (d - p2.2).pow(2);
+                        let sqr_dist_2 = (x - p2.0).abs().min((x + size - p2.0).abs()).pow(2)
+                            + (y - p2.1).abs().min((y + size - p2.1).abs()).pow(2)
+                            + (d - p2.2).abs().min((d + dimension - p2.2).abs()).pow(2);
                         let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
                         // --- Value
                         let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
@@ -367,7 +387,9 @@ fn main() {
 
                     // Here compute the cost
                     // --- Distance
-                    let sqr_dist_1 = (x - p1.0).pow(2) + (y - p1.1).pow(2) + (d - p1.2).pow(2);
+                    let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
+                            + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
+                            + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
                     let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
                     let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
                     // Compute the orginal and the new value
@@ -413,8 +435,8 @@ fn main() {
                     );
 
                     if fft {
-                        let fft_r = fft2d( &img[0..slice_size], size as usize);
-                        let fft_g = fft2d( &img[0..slice_size], size as usize);
+                        let fft_r = fft2d(&img[0..slice_size], size as usize);
+                        let fft_g = fft2d(&img[slice_size..2 * slice_size], size as usize);
                         save_img_2d(
                             &fft_r[..],
                             &fft_g[..],
@@ -431,7 +453,7 @@ fn main() {
                     );
 
                     if fft {
-                        let fft_r = fft2d( &img[0..slice_size], size as usize);
+                        let fft_r = fft2d(&img[0..slice_size], size as usize);
                         save_img(
                             &fft_r[..],
                             (size as usize, size as usize),
