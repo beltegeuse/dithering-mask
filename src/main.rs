@@ -104,7 +104,8 @@ pub fn fft2d(real: &[f32], size: usize) -> Vec<f32> {
     (0..size_sqr)
         .map(|i| {
             ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt() + 1.0).ln()
-                * size as f32 * 2.0
+                * size as f32
+                * 2.0
         })
         .collect::<Vec<f32>>()
 }
@@ -300,11 +301,14 @@ fn main() {
     // Create the random image
     let mut rng = rand::thread_rng();
     let mut img = vec![0.0 as f32; (size * size * dimension) as usize];
-    for i in 0..(size * size * dimension) as usize {
-        img[i] = rng.gen_range(0.0, 1.0);
+    {
+        let offset = 0.5 / (size * size * dimension) as f32;
+        for i in 0..(size * size * dimension) as usize {
+            img[i] = (i as f32 + offset) / (size * size * dimension) as f32;
+        }
+        img.shuffle(&mut rng);    
     }
-    info!("{:?}", img);
-
+    
     // Create vector of pixel coordinate [(x,y,d), ...]
     let mut index = (0..size * size * dimension)
         .map(|v| {
@@ -388,8 +392,8 @@ fn main() {
                     // Here compute the cost
                     // --- Distance
                     let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
-                            + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
-                            + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
+                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
+                        + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
                     let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
                     let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
                     // Compute the orginal and the new value
@@ -514,25 +518,72 @@ fn main() {
 
     // Save final (all dimension)
     match dimension {
-        1 => save_img(
-            &img[0..slice_size],
-            (size as usize, size as usize),
-            &format!("{}.{}", output, ext),
-        ),
-        2 => save_img_2d(
-            &img[0..slice_size],
-            &img[slice_size..2 * slice_size],
-            (size as usize, size as usize),
-            &format!("{}.{}", output, ext),
-        ),
+        1 => {
+            save_img(
+                &img[0..slice_size],
+                (size as usize, size as usize),
+                &format!("{}.{}", output, ext),
+            );
+            if fft {
+                let fft_r = fft2d(&img[0..slice_size], size as usize);
+                save_img(
+                    &fft_r[..],
+                    (size as usize, size as usize),
+                    &format!("{}_fft.{}", output, ext),
+                );
+            }
+        }
+        2 => {
+            save_img_2d(
+                &img[0..slice_size],
+                &img[slice_size..2 * slice_size],
+                (size as usize, size as usize),
+                &format!("{}.{}", output, ext),
+            );
+            if fft {
+                let fft_r = fft2d(&img[0..slice_size], size as usize);
+                let fft_g = fft2d(&img[slice_size..2 * slice_size], size as usize);
+                save_img_2d(
+                    &fft_r[..],
+                    &fft_g[..],
+                    (size as usize, size as usize),
+                    &format!("{}_fft.{}", output, ext),
+                );
+            }
+        }
         _ => {
             for d in 0..dimension {
                 let d_beg = (d * size * size) as usize;
                 save_img(
                     &img[d_beg..d_beg + (size * size) as usize],
                     (size as usize, size as usize),
-                    &format!("{}_{}.{}", output, d, ext),
+                    &format!("{}_dim_{}.{}", output, d, ext),
                 );
+
+                if fft {
+                    let fft_r = fft2d(&img[0..slice_size], size as usize);
+                    save_img(
+                        &fft_r[..],
+                        (size as usize, size as usize),
+                        &format!("{}_fft_dim_{}.{}", output, d, ext),
+                    );
+                }
+            }
+        }
+    }
+
+    // Dump output (float map) 
+    {
+        let file = File::create(Path::new(&format!("{}.mask", output))).unwrap();
+        let mut file = BufWriter::new(file);
+        let header = format!("MASK\n{} {} {}\n-1.0\n", size, size, dimension);
+        file.write_all(header.as_bytes()).unwrap();
+        for d in 0..dimension {
+            for y in 0..size {
+                for x in 0..size {
+                    let p = img[get_index((x,y,d))];
+                    file.write_f32::<LittleEndian>(p.abs()).unwrap();
+                }
             }
         }
     }
