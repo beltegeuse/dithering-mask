@@ -104,7 +104,7 @@ pub fn fft2d(real: &[f32], size: usize) -> Vec<f32> {
     (0..size_sqr)
         .map(|i| {
             ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt() + 1.0).ln()
-                * 50.0
+                * size as f32 * 2.0
         })
         .collect::<Vec<f32>>()
 }
@@ -119,9 +119,9 @@ pub fn save_ldr_image(img: &[f32], size: (usize, usize), imgout_path_str: &str) 
                 x as u32,
                 y as u32,
                 Rgba::from_channels(
-                    (p.min(1.0).powf(1.0 / 2.2) * 255.0) as u8,
-                    (p.min(1.0).powf(1.0 / 2.2) * 255.0) as u8,
-                    (p.min(1.0).powf(1.0 / 2.2) * 255.0) as u8,
+                    (p.min(1.0) * 255.0) as u8,
+                    (p.min(1.0) * 255.0) as u8,
+                    (p.min(1.0) * 255.0) as u8,
                     255,
                 ),
             );
@@ -170,8 +170,8 @@ pub fn save_ldr_image_2d(r: &[f32], g: &[f32], size: (usize, usize), imgout_path
                 x as u32,
                 y as u32,
                 Rgba::from_channels(
-                    (r_v.min(1.0).powf(1.0 / 2.2) * 255.0) as u8,
-                    (g_v.min(1.0).powf(1.0 / 2.2) * 255.0) as u8,
+                    (r_v.min(1.0) * 255.0) as u8,
+                    (g_v.min(1.0) * 255.0) as u8,
                     0,
                     255,
                 ),
@@ -505,8 +505,8 @@ fn main() {
         // Update temperature for the next iteration
         temp *= frac;
         info!(
-            "Accepted: {} \t Delta Avg: {} \t Time: {} sec",
-            accepted_moves,
+            "Accept rate: {} \t Delta Avg: {} \t Time: {} sec",
+            (accepted_moves as f32 / index.len() as f32) * 50.0,
             delta_avg,
             now.elapsed().as_secs_f32()
         );
