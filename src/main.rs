@@ -302,20 +302,30 @@ fn main() {
     let mut rng = rand::thread_rng();
     let mut img = vec![0.0 as f32; (size * size * dimension) as usize];
     {
-        let offset = 0.5 / (size * size * dimension) as f32;
-        for i in 0..(size * size * dimension) as usize {
-            img[i] = (i as f32 + offset) / (size * size * dimension) as f32;
+        let inv_2d_size = 1.0 / (size * size) as f32;
+        for d in 0..dimension {
+            let offset_rand = rng.gen_range(0.0, 1.0) * inv_2d_size;
+            let offset_index = (d * (size * size)) as usize;
+            for i in 0..(size * size) as usize {
+                img[i+offset_index] = (i as f32 + offset_rand) / (size * size) as f32;
+            }
         }
         img.shuffle(&mut rng);
     }
     // Create vector of pixel coordinate [(x,y,d), ...]
-    let mut index = (0..size * size * dimension)
-        .map(|v| {
-            let v2 = v % (size * size);
-            (v2 % size, v2 / size, v / (size * size))
-        })
-        .collect::<Vec<_>>();
-    let index_order = index.clone();
+    let index_order = (0..size * size * dimension)
+    .map(|v| {
+        let v2 = v % (size * size);
+        (v2 % size, v2 / size, v / (size * size))
+    })
+    .collect::<Vec<_>>();
+    // Only 2D index
+    let mut index_2d = (0..size * size)
+    .map(|v| {
+        let v2 = v % (size * size);
+        (v2 % size, v2 / size)
+    })
+    .collect::<Vec<_>>();
 
     // Helper to convert (x,y,d) to img coordinates
     let get_index =
@@ -468,7 +478,7 @@ fn main() {
         }
         // Shuffle the pair
         // At each iteration, all pixel will have a swap attempt
-        index.shuffle(&mut rng);
+        index_2d.shuffle(&mut rng);
         info!(
             "[{}/{}] \t Energy: {} \t Temp: {}",
             t + 1,
@@ -477,31 +487,41 @@ fn main() {
             temp
         );
         let mut accepted_moves = 0;
-        for chunk in index.chunks_exact(2) {
-            // Compute the new and old energy if we was doing the swap
-            let res = energy_diff_pair(&img, chunk[0], chunk[1]);
-            let delta = res.new - res.org;
-            let delta_abs = delta.abs();
-            let accept = if delta < 0.0 {
-                true
-            } else {
-                // Compute acceptence probability with temperature
-                let a = (-delta_abs / (delta_avg * temp)).exp();
-                a >= rng.gen_range(0.0, 1.0)
-            };
+        // Important: We only swap pair on the same dimension
+        // indeed, otherwise, the distribution can change in different dimension
+        // leading to problem when optimizing large dimension mask. 
+        // Note that the optimization procedure will be less effective when
+        // the dimension of the mask increases
+        for d in 0..dimension {
+            for chunk in index_2d.chunks_exact(2) {
+                let p_1 = (chunk[0].0, chunk[0].1, d);
+                let p_2 = (chunk[1].0, chunk[1].1, d);
+                
+                // Compute the new and old energy if we was doing the swap
+                let res = energy_diff_pair(&img, p_1, p_2);
+                let delta = res.new - res.org;
+                let delta_abs = delta.abs();
+                let accept = if delta < 0.0 {
+                    true
+                } else {
+                    // Compute acceptence probability with temperature
+                    let a = (-delta_abs / (delta_avg * temp)).exp();
+                    a >= rng.gen_range(0.0, 1.0)
+                };
 
-            // If we want to do the swap
-            if accept {
-                // Swap img values
-                let tmp = img[get_index(chunk[0])];
-                img[get_index(chunk[0])] = img[get_index(chunk[1])];
-                img[get_index(chunk[1])] = tmp;
-                // Update the state
-                energy += delta;
-                accepted_moves += 1;
-                delta_avg =
-                    (delta_avg * total_accepted as f32 + delta_abs) / (total_accepted + 1) as f32;
-                total_accepted += 1;
+                // If we want to do the swap
+                if accept {
+                    // Swap img values
+                    let tmp = img[get_index(p_1)];
+                    img[get_index(p_1)] = img[get_index(p_2)];
+                    img[get_index(p_2)] = tmp;
+                    // Update the state
+                    energy += delta;
+                    accepted_moves += 1;
+                    delta_avg =
+                        (delta_avg * total_accepted as f32 + delta_abs) / (total_accepted + 1) as f32;
+                    total_accepted += 1;
+                }
             }
         }
 
@@ -509,7 +529,7 @@ fn main() {
         temp *= frac;
         info!(
             "Accept rate: {} \t Delta Avg: {} \t Time: {} sec",
-            (accepted_moves as f32 / index.len() as f32) * 50.0,
+            (accepted_moves as f32 / (index_order.len()) as f32) * (100.0 / (2.0 * dimension as f32)),
             delta_avg,
             now.elapsed().as_secs_f32()
         );
