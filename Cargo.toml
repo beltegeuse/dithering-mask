@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["beltegeuse <adrien.gruson@gmail.com>"]
 edition = "2018"
 
+[[bin]]
+name = "dithering-mask"
+doc = false
+
 [dependencies]
 rand = "*"
 log = "*"
@@ -12,3 +16,10 @@ byteorder = "*"
 clap = "*"
 image = "*"
 rayon = "*"
+
+[dev-dependencies]
+criterion = "*"
+
+[[bench]]
+name = "energy"
+harness = false

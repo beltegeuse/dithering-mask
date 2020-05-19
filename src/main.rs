@@ -14,101 +14,7 @@ use std::time;
 use clap::*;
 // LDR image (png)
 use image::*;
-// Parallel processing
-use rayon::prelude::*;
-
-// FFT
-pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32], size: usize) {
-    let inv_size = 1.0 / size as f32;
-
-    // For the sum
-    struct ResultFFT {
-        pub real: f32,
-        pub img: f32,
-    }
-    impl std::iter::Sum for ResultFFT {
-        fn sum<I>(iter: I) -> Self
-        where
-            I: Iterator<Item = Self>,
-        {
-            iter.fold(
-                Self {
-                    real: 0.0,
-                    img: 0.0,
-                },
-                |a, b| Self {
-                    real: a.real + b.real,
-                    img: a.img + b.img,
-                },
-            )
-        }
-    }
-
-    // Compute FFT
-    for i in 0..size {
-        let constant = 2.0 * std::f32::consts::PI * i as f32 * inv_size;
-        let res = (0..size)
-            .map(|j| {
-                let cos_constant = (j as f32 * constant).cos();
-                let sin_constant = (j as f32 * constant).sin();
-                ResultFFT {
-                    real: real[j] * cos_constant + img[j] * sin_constant,
-                    img: -real[j] * sin_constant + img[j] * cos_constant,
-                }
-            })
-            .sum::<ResultFFT>();
-        out_real[i] = res.real * inv_size;
-        out_img[i] = res.img * inv_size;
-    }
-}
-
-pub fn fft2d(real: &[f32], size: usize) -> Vec<f32> {
-    let size_sqr = size * size;
-
-    let mut real_temp_1 = (0..size_sqr)
-        .map(|i| real[i] * (-1.0 as f32).powi(((i % size) + (i / size)) as i32))
-        .collect::<Vec<f32>>();
-    let mut img_temp_1 = vec![0.0; size_sqr];
-    let mut real_temp_2 = vec![0.0; size_sqr];
-    let mut img_temp_2 = vec![0.0; size_sqr];
-
-    // Horizontal
-    for i in 0..size {
-        let index = i * size;
-        fft1d(
-            &real_temp_1[index..index + size],
-            &img_temp_1[index..index + size],
-            &mut real_temp_2[index..index + size],
-            &mut img_temp_2[index..index + size],
-            size,
-        );
-    }
-
-    // Rotate image & Vertical
-    for i in 0..size_sqr {
-        real_temp_1[i] = real_temp_2[(i % size) * size + (i / size)];
-        img_temp_1[i] = img_temp_2[(i % size) * size + (i / size)];
-    }
-    for i in 0..size {
-        let index = i * size;
-        fft1d(
-            &real_temp_1[index..index + size],
-            &img_temp_1[index..index + size],
-            &mut real_temp_2[index..index + size],
-            &mut img_temp_2[index..index + size],
-            size,
-        );
-    }
-
-    // Normalize and output
-    (0..size_sqr)
-        .map(|i| {
-            ((real_temp_2[i] * real_temp_2[i] + img_temp_2[i] * img_temp_2[i]).sqrt() + 1.0).ln()
-                * size as f32
-                * 2.0
-        })
-        .collect::<Vec<f32>>()
-}
+use dithering_mask;
 
 // Functions to write output mask
 pub fn save_ldr_image(img: &[f32], size: (usize, usize), imgout_path_str: &str) {
@@ -182,60 +88,6 @@ pub fn save_ldr_image_2d(r: &[f32], g: &[f32], size: (usize, usize), imgout_path
     image_ldr
         .save(&Path::new(imgout_path_str))
         .expect("failed to write img into file");
-}
-
-pub struct PixelData {
-    pub x: i32,
-    pub y: i32,
-    pub d: i32,
-    pub v: f32,
-}
-// Lambda that compute the energy if the pixel get swap or not
-// This information is used later for computing the probability to swap
-pub struct Result {
-    pub org: f32,
-    pub new: f32,
-}
-impl std::iter::Sum for Result {
-    fn sum<I>(iter: I) -> Self
-    where
-        I: Iterator<Item = Self>,
-    {
-        iter.fold(Self { org: 0.0, new: 0.0 }, |a, b| Self {
-            org: a.org + b.org,
-            new: a.new + b.new,
-        })
-    }
-}
-const SIGMA_I: f32 = 2.1 * 2.1;
-const SIGMA_S: f32 = 1.0;
-pub fn energy_diff_pair(
-    size: i32,
-    factor: f32,
-    pixels: &Vec<PixelData>,
-    p1: &PixelData,
-    p2: &PixelData,
-) -> Result {
-    pixels
-        .par_iter()
-        .map(|p| {
-            // Here compute the cost
-            // --- Distance (with cycle mapping)
-            let sqr_dist_1 = (p.x - p1.x).abs().min((p.x + size - p1.x).abs()).pow(2)
-                + (p.y - p1.y).abs().min((p.y + size - p1.y).abs()).pow(2);
-            let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-            let sqr_dist_2 = (p.x - p2.x).abs().min((p.x + size - p2.x).abs()).pow(2)
-                + (p.y - p2.y).abs().min((p.y + size - p2.y).abs()).pow(2);
-            let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
-            // --- Value
-            let value_term_1 = (-(p1.v - p.v).abs().powf(factor) / SIGMA_S).exp();
-            let value_term_2 = (-(p2.v - p.v).abs().powf(factor) / SIGMA_S).exp();
-            Result {
-                org: dist_term_1 * value_term_1 + dist_term_2 * value_term_2,
-                new: dist_term_1 * value_term_2 + dist_term_2 * value_term_1,
-            }
-        })
-        .sum::<Result>()
 }
 
 fn main() {
@@ -351,32 +203,8 @@ fn main() {
     let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
     // Create the random image
     let mut rng = rand::rngs::StdRng::seed_from_u64(0);
-    let mut pixels = {
-        let img = {
-            let mut img = vec![0.0 as f32; (size * size * dimension) as usize];
-            let inv_2d_size = 1.0 / (size * size) as f32;
-            for d in 0..dimension {
-                let offset_rand = rng.gen_range(0.0, 1.0) * inv_2d_size;
-                let offset_index = (d * (size * size)) as usize;
-                for i in 0..(size * size) as usize {
-                    img[i + offset_index] = (i as f32 + offset_rand) / (size * size) as f32;
-                }
-            }
-            img.shuffle(&mut rng);
-            img
-        };
-        (0..size * size * dimension)
-            .map(|v| {
-                let v2 = v % (size * size);
-                PixelData {
-                    x: v2 % size,
-                    y: v2 / size,
-                    d: v / (size * size),
-                    v: img[v as usize],
-                }
-            })
-            .collect::<Vec<_>>()
-    };
+    let mut pixels = dithering_mask::gen_pixels(size, dimension, &mut rng);
+
     // Only 2D index, as we need to make a special treatment
     // for dimension
     let mut index_2d = (0..size * size)
@@ -394,22 +222,7 @@ fn main() {
     // Note that this information is informative only
     // as total energy is never used in our optimization process
     info!("Compute total energy ...");
-    let mut energy = pixels
-        .par_iter()
-        .map(|p1| {
-            pixels
-                .iter()
-                .map(|p| {
-                    let sqr_dist_1 = (p.x - p1.x).abs().min((p.x + size - p1.x).abs()).pow(2)
-                        + (p.y - p1.y).abs().min((p.y + size - p1.y).abs()).pow(2);
-                    let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-                    let value_term_1 = (-(p1.v - p.v).abs().powf(factor) / SIGMA_S).exp();
-                    dist_term_1 * value_term_1
-                })
-                .sum::<f32>()
-        })
-        .sum::<f32>()
-        * 0.5;
+    let mut energy = dithering_mask::energy(size, factor, &pixels);
     info!("Total energy: {}", energy);
 
     //////////////////////
@@ -437,8 +250,8 @@ fn main() {
                     );
 
                     if fft {
-                        let fft_r = fft2d(&img[0..slice_size], size as usize);
-                        let fft_g = fft2d(&img[slice_size..2 * slice_size], size as usize);
+                        let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
+                        let fft_g = dithering_mask::fft::fft2d(&img[slice_size..2 * slice_size], size as usize);
                         save_img_2d(
                             &fft_r[..],
                             &fft_g[..],
@@ -455,7 +268,7 @@ fn main() {
                     );
 
                     if fft {
-                        let fft_r = fft2d(&img[0..slice_size], size as usize);
+                        let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
                         save_img(
                             &fft_r[..],
                             (size as usize, size as usize),
@@ -487,7 +300,7 @@ fn main() {
                 let p_2 = (chunk[1].0, chunk[1].1, d);
                 // Compute the new and old energy if we was doing the swap
                 let res = pool.install(|| {
-                    energy_diff_pair(
+                    dithering_mask::energy_diff_pair(
                         size,
                         factor,
                         &pixels,
@@ -541,7 +354,7 @@ fn main() {
                 &format!("{}.{}", output, ext),
             );
             if fft {
-                let fft_r = fft2d(&img[0..slice_size], size as usize);
+                let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
                 save_img(
                     &fft_r[..],
                     (size as usize, size as usize),
@@ -557,8 +370,8 @@ fn main() {
                 &format!("{}.{}", output, ext),
             );
             if fft {
-                let fft_r = fft2d(&img[0..slice_size], size as usize);
-                let fft_g = fft2d(&img[slice_size..2 * slice_size], size as usize);
+                let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
+                let fft_g = dithering_mask::fft::fft2d(&img[slice_size..2 * slice_size], size as usize);
                 save_img_2d(
                     &fft_r[..],
                     &fft_g[..],
@@ -577,7 +390,7 @@ fn main() {
                 );
 
                 if fft {
-                    let fft_r = fft2d(&img[d_beg..d_beg + (size * size) as usize], size as usize);
+                    let fft_r = dithering_mask::fft::fft2d(&img[d_beg..d_beg + (size * size) as usize], size as usize);
                     save_img(
                         &fft_r[..],
                         (size as usize, size as usize),
