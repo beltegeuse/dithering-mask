@@ -6,7 +6,6 @@ use rand::prelude::*;
 pub struct PixelData {
     pub x: i32,
     pub y: i32,
-    pub d: i32,
     pub v: f32,
 }
 pub fn gen_pixels(size: i32, dimension: i32, mut rng: &mut rand::rngs::StdRng) -> Vec<PixelData> {
@@ -27,7 +26,6 @@ pub fn gen_pixels(size: i32, dimension: i32, mut rng: &mut rand::rngs::StdRng) -
             PixelData {
                 x: v2 % size,
                 y: v2 / size,
-                d: v / (size * size),
                 v: img[v as usize],
             }
         })
