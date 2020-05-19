@@ -22,11 +22,11 @@ pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32
     let inv_size = 1.0 / size as f32;
 
     // For the sum
-    struct Result {
+    struct ResultFFT {
         pub real: f32,
         pub img: f32,
     }
-    impl std::iter::Sum for Result {
+    impl std::iter::Sum for ResultFFT {
         fn sum<I>(iter: I) -> Self
         where
             I: Iterator<Item = Self>,
@@ -51,12 +51,12 @@ pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32
             .map(|j| {
                 let cos_constant = (j as f32 * constant).cos();
                 let sin_constant = (j as f32 * constant).sin();
-                Result {
+                ResultFFT {
                     real: real[j] * cos_constant + img[j] * sin_constant,
                     img: -real[j] * sin_constant + img[j] * cos_constant,
                 }
             })
-            .sum::<Result>();
+            .sum::<ResultFFT>();
         out_real[i] = res.real * inv_size;
         out_img[i] = res.img * inv_size;
     }
@@ -184,6 +184,60 @@ pub fn save_ldr_image_2d(r: &[f32], g: &[f32], size: (usize, usize), imgout_path
         .expect("failed to write img into file");
 }
 
+pub struct PixelData {
+    pub x: i32,
+    pub y: i32,
+    pub d: i32,
+    pub v: f32,
+}
+// Lambda that compute the energy if the pixel get swap or not
+// This information is used later for computing the probability to swap
+pub struct Result {
+    pub org: f32,
+    pub new: f32,
+}
+impl std::iter::Sum for Result {
+    fn sum<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = Self>,
+    {
+        iter.fold(Self { org: 0.0, new: 0.0 }, |a, b| Self {
+            org: a.org + b.org,
+            new: a.new + b.new,
+        })
+    }
+}
+const SIGMA_I: f32 = 2.1 * 2.1;
+const SIGMA_S: f32 = 1.0;
+pub fn energy_diff_pair(
+    size: i32,
+    factor: f32,
+    pixels: &Vec<PixelData>,
+    p1: &PixelData,
+    p2: &PixelData,
+) -> Result {
+    pixels
+        .par_iter()
+        .map(|p| {
+            // Here compute the cost
+            // --- Distance (with cycle mapping)
+            let sqr_dist_1 = (p.x - p1.x).abs().min((p.x + size - p1.x).abs()).pow(2)
+                + (p.y - p1.y).abs().min((p.y + size - p1.y).abs()).pow(2);
+            let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
+            let sqr_dist_2 = (p.x - p2.x).abs().min((p.x + size - p2.x).abs()).pow(2)
+                + (p.y - p2.y).abs().min((p.y + size - p2.y).abs()).pow(2);
+            let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
+            // --- Value
+            let value_term_1 = (-(p1.v - p.v).abs().powf(factor) / SIGMA_S).exp();
+            let value_term_2 = (-(p2.v - p.v).abs().powf(factor) / SIGMA_S).exp();
+            Result {
+                org: dist_term_1 * value_term_1 + dist_term_2 * value_term_2,
+                new: dist_term_1 * value_term_2 + dist_term_2 * value_term_1,
+            }
+        })
+        .sum::<Result>()
+}
+
 fn main() {
     // Setup logger
     env_logger::Builder::from_default_env()
@@ -292,124 +346,68 @@ fn main() {
         Some(v) => Some(v.parse::<i32>().expect(&format!("{} is not an i32", v))),
     };
     let fft = matches.is_present("fft");
-    // -- Other constants
-    const SIGMA_I: f32 = 2.1 * 2.1;
-    const SIGMA_S: f32 = 1.0;
 
     // Create the thread pool
     let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
     // Create the random image
-    let mut rng = rand::thread_rng();
-    let mut img = vec![0.0 as f32; (size * size * dimension) as usize];
-    {
-        let inv_2d_size = 1.0 / (size * size) as f32;
-        for d in 0..dimension {
-            let offset_rand = rng.gen_range(0.0, 1.0) * inv_2d_size;
-            let offset_index = (d * (size * size)) as usize;
-            for i in 0..(size * size) as usize {
-                img[i+offset_index] = (i as f32 + offset_rand) / (size * size) as f32;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+    let mut pixels = {
+        let img = {
+            let mut img = vec![0.0 as f32; (size * size * dimension) as usize];
+            let inv_2d_size = 1.0 / (size * size) as f32;
+            for d in 0..dimension {
+                let offset_rand = rng.gen_range(0.0, 1.0) * inv_2d_size;
+                let offset_index = (d * (size * size)) as usize;
+                for i in 0..(size * size) as usize {
+                    img[i + offset_index] = (i as f32 + offset_rand) / (size * size) as f32;
+                }
             }
-        }
-        img.shuffle(&mut rng);
-    }
-    // Create vector of pixel coordinate [(x,y,d), ...]
-    let index_order = (0..size * size * dimension)
-    .map(|v| {
-        let v2 = v % (size * size);
-        (v2 % size, v2 / size, v / (size * size))
-    })
-    .collect::<Vec<_>>();
+            img.shuffle(&mut rng);
+            img
+        };
+        (0..size * size * dimension)
+            .map(|v| {
+                let v2 = v % (size * size);
+                PixelData {
+                    x: v2 % size,
+                    y: v2 / size,
+                    d: v / (size * size),
+                    v: img[v as usize],
+                }
+            })
+            .collect::<Vec<_>>()
+    };
     // Only 2D index, as we need to make a special treatment
     // for dimension
     let mut index_2d = (0..size * size)
-    .map(|v| {
-        let v2 = v % (size * size);
-        (v2 % size, v2 / size)
-    })
-    .collect::<Vec<_>>();
+        .map(|v| {
+            let v2 = v % (size * size);
+            (v2 % size, v2 / size)
+        })
+        .collect::<Vec<_>>();
 
     // Helper to convert (x,y,d) to img coordinates
     let get_index =
         |p: (i32, i32, i32)| -> usize { (p.2 * size * size + p.1 * size + p.0) as usize };
 
-    // Lambda that compute the energy if the pixel get swap or not
-    // This information is used later for computing the probability to swap
-    struct Result {
-        pub org: f32,
-        pub new: f32,
-    }
-    impl std::iter::Sum for Result {
-        fn sum<I>(iter: I) -> Self
-        where
-            I: Iterator<Item = Self>,
-        {
-            iter.fold(Self { org: 0.0, new: 0.0 }, |a, b| Self {
-                org: a.org + b.org,
-                new: a.new + b.new,
-            })
-        }
-    }
-    let energy_diff_pair = |img: &Vec<f32>, p1: (i32, i32, i32), p2: (i32, i32, i32)| -> Result {
-        let p1_v = img[get_index(p1)];
-        let p2_v = img[get_index(p2)];
-        pool.install(|| {
-            index_order
-                .par_iter()
-                .map(|(x, y, d)| {
-                    // TODO: Avoid this by zipping values inside
-                    // the index order.
-                    let current_v = img[get_index((*x, *y, *d))];
-                    // Here compute the cost
-                    // --- Distance (with cycle mapping)
-                    let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
-                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2);
-                    let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-                    let sqr_dist_2 = (x - p2.0).abs().min((x + size - p2.0).abs()).pow(2)
-                        + (y - p2.1).abs().min((y + size - p2.1).abs()).pow(2);
-                    let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
-                    // --- Value
-                    let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
-                    let value_term_2 = (-(p2_v - current_v).abs().powf(factor) / SIGMA_S).exp();
-
-                    Result {
-                        org: dist_term_1 * value_term_1 + dist_term_2 * value_term_2,
-                        new: dist_term_1 * value_term_2 + dist_term_2 * value_term_1,
-                    }
-                })
-                .sum::<Result>()
-        })
-    };
-
-    // Compute the energy for a given pixel
-    // to all the other pixel of the image
-    let energy_pixel = |p1: (i32, i32, i32)| -> f32 {
-        let p1_v = img[get_index(p1)];
-        let mut e = 0.0;
-        for d in 0..dimension {
-            for y in 0..size {
-                for x in 0..size {
-                    let current_v = img[get_index((x, y, d))];
-                    // Here compute the cost
-                    // --- Distance
-                    let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
-                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2);
-                    let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-                    let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
-                    // Compute the orginal and the new value
-                    e += dist_term_1 * value_term_1;
-                }
-            }
-        }
-        e
-    };
-
     // Compute the total energy
     // Note that this information is informative only
     // as total energy is never used in our optimization process
     info!("Compute total energy ...");
-    let mut energy = index_order
+    let mut energy = pixels
         .par_iter()
-        .map(|(x, y, d)| energy_pixel((*x, *y, *d)))
+        .map(|p1| {
+            pixels
+                .iter()
+                .map(|p| {
+                    let sqr_dist_1 = (p.x - p1.x).abs().min((p.x + size - p1.x).abs()).pow(2)
+                        + (p.y - p1.y).abs().min((p.y + size - p1.y).abs()).pow(2);
+                    let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
+                    let value_term_1 = (-(p1.v - p.v).abs().powf(factor) / SIGMA_S).exp();
+                    dist_term_1 * value_term_1
+                })
+                .sum::<f32>()
+        })
         .sum::<f32>()
         * 0.5;
     info!("Total energy: {}", energy);
@@ -428,6 +426,7 @@ fn main() {
         let now = time::Instant::now();
         // Save a temporay image if needed
         if let Some(iter) = output_iter {
+            let img = pixels.iter().map(|p| p.v).collect::<Vec<_>>();
             if t % iter == 0 {
                 if dimension == 2 {
                     save_img_2d(
@@ -479,16 +478,23 @@ fn main() {
         let mut accepted_moves = 0;
         // Important: We only swap pair on the same dimension
         // indeed, otherwise, the distribution can change in different dimension
-        // leading to problem when optimizing large dimension mask. 
+        // leading to problem when optimizing large dimension mask.
         // Note that the optimization procedure will be less effective when
         // the dimension of the mask increases
         for d in 0..dimension {
             for chunk in index_2d.chunks_exact(2) {
                 let p_1 = (chunk[0].0, chunk[0].1, d);
                 let p_2 = (chunk[1].0, chunk[1].1, d);
-                
                 // Compute the new and old energy if we was doing the swap
-                let res = energy_diff_pair(&img, p_1, p_2);
+                let res = pool.install(|| {
+                    energy_diff_pair(
+                        size,
+                        factor,
+                        &pixels,
+                        &pixels[get_index(p_1)],
+                        &pixels[get_index(p_2)],
+                    )
+                });
                 let delta = res.new - res.org;
                 let delta_abs = delta.abs();
                 let accept = if delta < 0.0 {
@@ -502,14 +508,14 @@ fn main() {
                 // If we want to do the swap
                 if accept {
                     // Swap img values
-                    let tmp = img[get_index(p_1)];
-                    img[get_index(p_1)] = img[get_index(p_2)];
-                    img[get_index(p_2)] = tmp;
+                    let tmp = pixels[get_index(p_1)].v;
+                    pixels[get_index(p_1)].v = pixels[get_index(p_2)].v;
+                    pixels[get_index(p_2)].v = tmp;
                     // Update the state
                     energy += delta;
                     accepted_moves += 1;
-                    delta_avg =
-                        (delta_avg * total_accepted as f32 + delta_abs) / (total_accepted + 1) as f32;
+                    delta_avg = (delta_avg * total_accepted as f32 + delta_abs)
+                        / (total_accepted + 1) as f32;
                     total_accepted += 1;
                 }
             }
@@ -519,13 +525,14 @@ fn main() {
         temp *= frac;
         info!(
             "Accept rate: {} \t Delta Avg: {} \t Time: {} sec",
-            (accepted_moves as f32 / (index_order.len()) as f32 * 50.0),
+            (accepted_moves as f32 / (pixels.len()) as f32 * 50.0),
             delta_avg,
             now.elapsed().as_secs_f32()
         );
     }
 
     // Save final (all dimension)
+    let img = pixels.iter().map(|p| p.v).collect::<Vec<_>>();
     match dimension {
         1 => {
             save_img(
