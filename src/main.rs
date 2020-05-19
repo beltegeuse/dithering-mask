@@ -292,8 +292,8 @@ fn main() {
         Some(v) => Some(v.parse::<i32>().expect(&format!("{} is not an i32", v))),
     };
     let fft = matches.is_present("fft");
-
-    const SIGMA_I: f32 = 2.1;
+    // -- Other constants
+    const SIGMA_I: f32 = 2.1 * 2.1;
     const SIGMA_S: f32 = 1.0;
 
     // Create the thread pool
@@ -319,7 +319,8 @@ fn main() {
         (v2 % size, v2 / size, v / (size * size))
     })
     .collect::<Vec<_>>();
-    // Only 2D index
+    // Only 2D index, as we need to make a special treatment
+    // for dimension
     let mut index_2d = (0..size * size)
     .map(|v| {
         let v2 = v % (size * size);
@@ -355,30 +356,24 @@ fn main() {
             index_order
                 .par_iter()
                 .map(|(x, y, d)| {
-                    if *x == p1.0 && *y == p1.1 && *d == p1.2 {
-                        Result { org: 0.0, new: 0.0 }
-                    } else if *x == p2.0 && *y == p2.1 && *d == p2.2 {
-                        Result { org: 0.0, new: 0.0 }
-                    } else {
-                        let current_v = img[get_index((*x, *y, *d))];
-                        // Here compute the cost
-                        // --- Distance (with cycle mapping)
-                        let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
-                            + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
-                            + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
-                        let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
-                        let sqr_dist_2 = (x - p2.0).abs().min((x + size - p2.0).abs()).pow(2)
-                            + (y - p2.1).abs().min((y + size - p2.1).abs()).pow(2)
-                            + (d - p2.2).abs().min((d + dimension - p2.2).abs()).pow(2);
-                        let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
-                        // --- Value
-                        let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
-                        let value_term_2 = (-(p2_v - current_v).abs().powf(factor) / SIGMA_S).exp();
+                    // TODO: Avoid this by zipping values inside
+                    // the index order.
+                    let current_v = img[get_index((*x, *y, *d))];
+                    // Here compute the cost
+                    // --- Distance (with cycle mapping)
+                    let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
+                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2);
+                    let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
+                    let sqr_dist_2 = (x - p2.0).abs().min((x + size - p2.0).abs()).pow(2)
+                        + (y - p2.1).abs().min((y + size - p2.1).abs()).pow(2);
+                    let dist_term_2 = (-(sqr_dist_2 as f32) / SIGMA_I).exp();
+                    // --- Value
+                    let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
+                    let value_term_2 = (-(p2_v - current_v).abs().powf(factor) / SIGMA_S).exp();
 
-                        Result {
-                            org: dist_term_1 * value_term_1 + dist_term_2 * value_term_2,
-                            new: dist_term_1 * value_term_2 + dist_term_2 * value_term_1,
-                        }
+                    Result {
+                        org: dist_term_1 * value_term_1 + dist_term_2 * value_term_2,
+                        new: dist_term_1 * value_term_2 + dist_term_2 * value_term_1,
                     }
                 })
                 .sum::<Result>()
@@ -393,16 +388,11 @@ fn main() {
         for d in 0..dimension {
             for y in 0..size {
                 for x in 0..size {
-                    if x == p1.0 && y == p1.1 && d == p1.2 {
-                        continue;
-                    }
                     let current_v = img[get_index((x, y, d))];
-
                     // Here compute the cost
                     // --- Distance
                     let sqr_dist_1 = (x - p1.0).abs().min((x + size - p1.0).abs()).pow(2)
-                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2)
-                        + (d - p1.2).abs().min((d + dimension - p1.2).abs()).pow(2);
+                        + (y - p1.1).abs().min((y + size - p1.1).abs()).pow(2);
                     let dist_term_1 = (-(sqr_dist_1 as f32) / SIGMA_I).exp();
                     let value_term_1 = (-(p1_v - current_v).abs().powf(factor) / SIGMA_S).exp();
                     // Compute the orginal and the new value
@@ -529,7 +519,7 @@ fn main() {
         temp *= frac;
         info!(
             "Accept rate: {} \t Delta Avg: {} \t Time: {} sec",
-            (accepted_moves as f32 / (index_order.len()) as f32) * (100.0 / (2.0 * dimension as f32)),
+            (accepted_moves as f32 / (index_order.len()) as f32 * 50.0),
             delta_avg,
             now.elapsed().as_secs_f32()
         );
@@ -592,6 +582,7 @@ fn main() {
     }
 
     // Dump output (float map)
+    // This is a custom format to easily load in other programs.
     {
         let file = File::create(Path::new(&format!("{}.mask", output))).unwrap();
         let mut file = BufWriter::new(file);
