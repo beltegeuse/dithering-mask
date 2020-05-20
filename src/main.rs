@@ -342,6 +342,7 @@ fn main() {
     }
 
     // Save final (all dimension)
+    // let pixels = dithering_mask::cluser_and_void(size, dimension, (0,0,0));
     let img = (0..dimension as usize).map(|d| pixels.iter().map(|p| p.v[d]).collect::<Vec<_>>()).collect::<Vec<_>>();
     match dimension {
         1 => {

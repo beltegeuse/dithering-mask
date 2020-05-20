@@ -3,6 +3,7 @@
 use rayon::prelude::*;
 use rand::prelude::*;
 
+#[derive(Debug)]
 pub struct PixelData {
     pub x: i32,
     pub y: i32,
@@ -115,6 +116,75 @@ pub fn energy(size: i32, dimension: i32, factor: f32, pixels: &Vec<PixelData>) -
         })
         .sum::<f32>()
         * 0.5
+}
+
+
+pub fn cluser_and_void(size: i32, dimension: i32, p: (i32, i32, i32)) -> Vec<PixelData> {
+    #[derive(Clone, Debug)]
+    struct MapEntry {
+        w: f32,
+        rank: i32,
+    }
+    impl Default for MapEntry {
+        fn default() -> Self {
+            Self {
+                w: 0.0,
+                rank: -1,
+            }
+        }
+    }
+    let get_index =
+        |p: (i32, i32, i32)| -> usize { (p.2 * size * size + p.1 * size + p.0) as usize };
+    
+    let splat = |p: (i32, i32, i32), map: &mut Vec<MapEntry> | -> (i32, i32, i32) {
+        let mut min_v = std::f32::MAX;
+        let mut min_i = (-1, -1, -1);
+        for d in 0..dimension {
+            for y in 0..size {
+                for x in 0..size {
+                    // Update weight
+                    let dist_1_x = (p.0 - x).abs();
+                    let dist_1_y = (p.1 - y).abs();
+                    let dist_1_d = (p.2 - d).abs();
+                    let sqr_dist_1 = dist_1_x.min(size - dist_1_x).pow(2) + dist_1_y.min(size - dist_1_y).pow(2) + dist_1_d.min(dimension - dist_1_d).pow(2);
+                    let c = get_index((x,y,d));
+                    map[c].w += (-(sqr_dist_1 as f32) / SIGMA_I).exp();
+                    if map[c].w < min_v && map[c].rank == -1 {
+                        min_i = (x,y,d);
+                        min_v = map[c].w;
+                    }
+                }
+            }
+        }
+        min_i
+    };
+
+    let mut current = p;
+    let mut map = vec![MapEntry::default(); (size * size * dimension) as usize];
+    for i in 0..(size * size * dimension) {
+        map[get_index(current)].rank = i;
+        current = splat(current, &mut map);
+    }
+
+    // Compute renormalize map
+    let min_max = (0..dimension as usize).map(|d| {
+        let size_2 = (size * size) as usize;
+        let min = (size_2*d..size_2*(d+1)).map(|i| map[i].rank).min().unwrap();
+        let max = (size_2*d..size_2*(d+1)).map(|i| map[i].rank).max().unwrap();
+        (min, max)
+    }).collect::<Vec<_>>();
+
+    (0..size*size).map(|i| {
+        let x = i % size;
+        let y = i / size;
+        PixelData {
+            x,
+            y,
+            v: (0..dimension).map(|d| {
+                ((map[get_index((x,y,d))].rank - min_max[d as usize].0) as f32 + 0.5) / (min_max[d as usize].1 - min_max[d as usize].0) as f32
+            }).collect::<Vec<_>>()
+        }
+    }).collect::<Vec<_>>()
 }
 
 pub mod fft;
