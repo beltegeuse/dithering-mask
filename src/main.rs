@@ -156,7 +156,6 @@ fn main() {
     // -- Global
     let size = value_t_or_exit!(matches.value_of("size"), i32);
     let dimension = value_t_or_exit!(matches.value_of("dimension"), i32);
-    let slice_size = (size * size) as usize;
     let factor = dimension as f32 / 2.0;
     // --- image output
     let output = value_t_or_exit!(matches.value_of("output"), String);
@@ -216,19 +215,18 @@ fn main() {
 
     // Helper to convert (x,y,d) to img coordinates
     let get_index =
-        |p: (i32, i32, i32)| -> usize { (p.2 * size * size + p.1 * size + p.0) as usize };
+        |p: (i32, i32)| -> usize { (p.1 * size + p.0) as usize };
 
     // Compute the total energy
     // Note that this information is informative only
     // as total energy is never used in our optimization process
     info!("Compute total energy ...");
-    let mut energy = dithering_mask::energy(size, factor, &pixels);
+    let mut energy = dithering_mask::energy(size, dimension, factor, &pixels);
     info!("Total energy: {}", energy);
 
     //////////////////////
     // Simulated anneling
     let mut delta_avg: f32 = 1.0;
-    let mut total_accepted = 0;
     // Temperature
     let t_1: f32 = -1.0 / probability[0].ln();
     let t50: f32 = -1.0 / probability[1].ln();
@@ -239,19 +237,19 @@ fn main() {
         let now = time::Instant::now();
         // Save a temporay image if needed
         if let Some(iter) = output_iter {
-            let img = pixels.iter().map(|p| p.v).collect::<Vec<_>>();
+            let img = (0..dimension as usize).map(|d| pixels.iter().map(|p| p.v[d]).collect::<Vec<_>>()).collect::<Vec<_>>();
             if t % iter == 0 {
                 if dimension == 2 {
                     save_img_2d(
-                        &img[0..slice_size],
-                        &img[slice_size..(2 * slice_size)],
+                        &img[0],
+                        &img[1],
                         (size as usize, size as usize),
                         &format!("{}_{}.{}", output, t, ext),
                     );
 
                     if fft {
-                        let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
-                        let fft_g = dithering_mask::fft::fft2d(&img[slice_size..2 * slice_size], size as usize);
+                        let fft_r = dithering_mask::fft::fft2d(&img[0], size as usize);
+                        let fft_g = dithering_mask::fft::fft2d(&img[1], size as usize);
                         save_img_2d(
                             &fft_r[..],
                             &fft_g[..],
@@ -262,13 +260,13 @@ fn main() {
                 } else {
                     // Take the first dimension by default
                     save_img(
-                        &img[0..(size * size) as usize],
+                        &img[0],
                         (size as usize, size as usize),
                         &format!("{}_{}.{}", output, t, ext),
                     );
 
                     if fft {
-                        let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
+                        let fft_r = dithering_mask::fft::fft2d(&img[1], size as usize);
                         save_img(
                             &fft_r[..],
                             (size as usize, size as usize),
@@ -294,44 +292,43 @@ fn main() {
         // leading to problem when optimizing large dimension mask.
         // Note that the optimization procedure will be less effective when
         // the dimension of the mask increases
-        for d in 0..dimension {
-            for chunk in index_2d.chunks_exact(2) {
-                let p_1 = (chunk[0].0, chunk[0].1, d);
-                let p_2 = (chunk[1].0, chunk[1].1, d);
-                // Compute the new and old energy if we was doing the swap
-                let res = pool.install(|| {
-                    dithering_mask::energy_diff_pair(
-                        size,
-                        factor,
-                        &pixels,
-                        &pixels[get_index(p_1)],
-                        &pixels[get_index(p_2)],
-                    )
-                });
-                let delta = res.new - res.org;
-                let delta_abs = delta.abs();
-                let accept = if delta < 0.0 {
-                    true
-                } else {
-                    // Compute acceptence probability with temperature
-                    let a = (-delta_abs / (delta_avg * temp)).exp();
-                    a >= rng.gen_range(0.0, 1.0)
-                };
+        for chunk in index_2d.chunks_exact(2) {
+            let p_1 = (chunk[0].0, chunk[0].1);
+            let p_2 = (chunk[1].0, chunk[1].1);
+            // Compute the new and old energy if we was doing the swap
+            let res = pool.install(|| {
+                dithering_mask::energy_diff_pair(
+                    size,
+                    dimension,
+                    factor,
+                    &pixels,
+                    &pixels[get_index(p_1)],
+                    &pixels[get_index(p_2)],
+                )
+            });
+            let delta = res.new - res.org;
+            let delta_abs = delta.abs();
+            let accept = if delta < 0.0 {
+                true
+            } else {
+                // Compute acceptence probability with temperature
+                let a = (-delta_abs / (delta_avg * temp)).exp();
+                a >= rng.gen_range(0.0, 1.0)
+            };
 
-                // If we want to do the swap
-                if accept {
-                    // Swap img values
-                    let tmp = pixels[get_index(p_1)].v;
-                    pixels[get_index(p_1)].v = pixels[get_index(p_2)].v;
-                    pixels[get_index(p_2)].v = tmp;
-                    // Update the state
-                    energy += delta;
-                    accepted_moves += 1;
-                    delta_avg = (delta_avg * total_accepted as f32 + delta_abs)
-                        / (total_accepted + 1) as f32;
-                    total_accepted += 1;
-                }
+            // If we want to do the swap
+            if accept {
+                // Swap img values
+                let tmp = pixels[get_index(p_1)].v.clone();
+                pixels[get_index(p_1)].v = pixels[get_index(p_2)].v.clone();
+                pixels[get_index(p_2)].v = tmp;
+                // Update the state
+                energy += delta;
+                accepted_moves += 1;
+                delta_avg = (delta_avg * accepted_moves as f32 + delta_abs)
+                    / (accepted_moves + 1) as f32;
             }
+            
         }
 
         // Update temperature for the next iteration
@@ -345,18 +342,18 @@ fn main() {
     }
 
     // Save final (all dimension)
-    let img = pixels.iter().map(|p| p.v).collect::<Vec<_>>();
+    let img = (0..dimension as usize).map(|d| pixels.iter().map(|p| p.v[d]).collect::<Vec<_>>()).collect::<Vec<_>>();
     match dimension {
         1 => {
             save_img(
-                &img[0..slice_size],
+                &img[0],
                 (size as usize, size as usize),
                 &format!("{}.{}", output, ext),
             );
             if fft {
-                let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
+                let fft_r = dithering_mask::fft::fft2d(&img[0], size as usize);
                 save_img(
-                    &fft_r[..],
+                    &fft_r,
                     (size as usize, size as usize),
                     &format!("{}_fft.{}", output, ext),
                 );
@@ -364,35 +361,34 @@ fn main() {
         }
         2 => {
             save_img_2d(
-                &img[0..slice_size],
-                &img[slice_size..2 * slice_size],
+                &img[0],
+                &img[1],
                 (size as usize, size as usize),
                 &format!("{}.{}", output, ext),
             );
             if fft {
-                let fft_r = dithering_mask::fft::fft2d(&img[0..slice_size], size as usize);
-                let fft_g = dithering_mask::fft::fft2d(&img[slice_size..2 * slice_size], size as usize);
+                let fft_r = dithering_mask::fft::fft2d(&img[0], size as usize);
+                let fft_g = dithering_mask::fft::fft2d(&img[1], size as usize);
                 save_img_2d(
-                    &fft_r[..],
-                    &fft_g[..],
+                    &fft_r,
+                    &fft_g,
                     (size as usize, size as usize),
                     &format!("{}_fft.{}", output, ext),
                 );
             }
         }
         _ => {
-            for d in 0..dimension {
-                let d_beg = (d * size * size) as usize;
+            for d in 0..dimension as usize {
                 save_img(
-                    &img[d_beg..d_beg + (size * size) as usize],
+                    &img[d],
                     (size as usize, size as usize),
                     &format!("{}_dim_{}.{}", output, d, ext),
                 );
 
                 if fft {
-                    let fft_r = dithering_mask::fft::fft2d(&img[d_beg..d_beg + (size * size) as usize], size as usize);
+                    let fft_r = dithering_mask::fft::fft2d(&img[d], size as usize);
                     save_img(
-                        &fft_r[..],
+                        &fft_r,
                         (size as usize, size as usize),
                         &format!("{}_fft_dim_{}.{}", output, d, ext),
                     );
@@ -411,7 +407,7 @@ fn main() {
         for d in 0..dimension {
             for y in 0..size {
                 for x in 0..size {
-                    let p = img[get_index((x, y, d))];
+                    let p = img[d as usize][get_index((x, y))];
                     file.write_f32::<LittleEndian>(p.abs()).unwrap();
                 }
             }

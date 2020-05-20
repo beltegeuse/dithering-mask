@@ -13,7 +13,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("Energy");
     group.sample_size(10);
-    group.bench_function("energy naive", |b| b.iter(|| dithering_mask::energy(SIZE, factor, &pixels)));
+    group.bench_function("energy naive", |b| b.iter(|| dithering_mask::energy(SIZE, DIM, factor, &pixels)));
 }
 
 criterion_group!(benches, criterion_benchmark);
