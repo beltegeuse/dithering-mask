@@ -16,6 +16,7 @@ byteorder = "*"
 clap = "*"
 image = "*"
 rayon = "*"
+pbr = "*"
 
 [dev-dependencies]
 criterion = "*"

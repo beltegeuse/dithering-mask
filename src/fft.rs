@@ -1,4 +1,4 @@
-// FFT
+/// Compute 1D FFT
 pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32], size: usize) {
     let inv_size = 1.0 / size as f32;
 
@@ -25,7 +25,7 @@ pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32
         }
     }
 
-    // Compute FFT
+    // Main loop
     for i in 0..size {
         let constant = 2.0 * std::f32::consts::PI * i as f32 * inv_size;
         let res = (0..size)
@@ -43,6 +43,7 @@ pub fn fft1d(real: &[f32], img: &[f32], out_real: &mut [f32], out_img: &mut [f32
     }
 }
 
+/// Compute FFT 2D
 pub fn fft2d(real: &[f32], size: usize) -> Vec<f32> {
     let size_sqr = size * size;
 
