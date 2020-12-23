@@ -143,13 +143,6 @@ fn main() {
                     .short("f")
                     .help("do the fft"),
             )
-            .arg(
-                Arg::with_name("probabilities")
-                    .short("p")
-                    .takes_value(true)
-                    .help("probability to accept worst move (init:final)")
-                    .default_value("0.1:0.001"),
-            )
             .get_matches();
 
     // Reading user parameters
@@ -176,21 +169,7 @@ fn main() {
     };
     // -- Optimization
     let iteration = value_t_or_exit!(matches.value_of("iteration"), i32);
-    let probability = value_t_or_exit!(matches.value_of("probabilities"), String);
-    let probability = probability
-        .split(":")
-        .into_iter()
-        .map(|v| v.parse::<f32>().expect("f32 for probabilities"))
-        .collect::<Vec<_>>();
-    if probability.len() != 2 {
-        panic!("the temperature have to be formated as: 0.01:0.001 (init:end)");
-    }
-    if probability[0] < probability[1] {
-        panic!(
-            "First probability {} need to be higher to final one {}",
-            probability[0], probability[1]
-        );
-    }
+
     // -- Debug (if necessary)
     let output_iter = match matches.value_of("intermediate") {
         None => None,
@@ -202,6 +181,10 @@ fn main() {
     let get_index =
     |p: (i32, i32)| -> usize { (p.1 * size + p.0) as usize };
 
+    let nb_moves_per_iteration = size*size;
+    let mut nb_iterations = 0; // Count the number of iteration (effective, discard auto-tunned iter)
+    let mut temperature = 10.0; // Very high temperature (but auto-tuned)
+    let cooling_rate = 0.001_f64;
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(0);
     // Do anneling for higher dimension, otherwise, cluster and void
@@ -216,15 +199,6 @@ fn main() {
         // Create the random image
         let mut pixels = dithering_mask::gen_pixels(size, dimension, &mut rng);
 
-        // Only 2D index, as we need to make a special treatment
-        // for dimension
-        let mut index_2d = (0..size * size)
-            .map(|v| {
-                let v2 = v % (size * size);
-                (v2 % size, v2 / size)
-            })
-            .collect::<Vec<_>>();
-
         // Compute the total energy
         // Note that this information is informative only
         // as total energy is never used in our optimization process
@@ -232,25 +206,19 @@ fn main() {
         let mut energy = dithering_mask::energy(size, dimension, factor, &pixels);
         info!("Total energy: {}", energy);
 
-        let mut delta_avg: f32 = 1.0;
-        // Temperature
-        let t_1: f32 = -1.0 / probability[0].ln();
-        let t50: f32 = -1.0 / probability[1].ln();
-        let frac: f32 = (t50 / t_1).powf(1.0 / (iteration - 1) as f32);
-        let mut temp = t_1; // The current temperature
-        for t in 0..iteration {
+        while nb_iterations < iteration {
             // For computing how long take an iteration...
             let now = time::Instant::now();
             // Save a temporay image if needed
             if let Some(iter) = output_iter {
                 let img = (0..dimension as usize).map(|d| pixels.iter().map(|p| p.v[d]).collect::<Vec<_>>()).collect::<Vec<_>>();
-                if t % iter == 0 {
+                if (nb_iterations+1) % iter == 0 {
                     if dimension == 2 {
                         save_img_2d(
                             &img[0],
                             &img[1],
                             (size as usize, size as usize),
-                            &format!("{}_{}.{}", output, t, ext),
+                            &format!("{}_{}.{}", output, nb_iterations+1, ext),
                         );
 
                         if fft {
@@ -260,7 +228,7 @@ fn main() {
                                 &fft_r[..],
                                 &fft_g[..],
                                 (size as usize, size as usize),
-                                &format!("{}_fft_{}.{}", output, t, ext),
+                                &format!("{}_fft_{}.{}", output, nb_iterations+1, ext),
                             );
                         }
                     } else {
@@ -268,7 +236,7 @@ fn main() {
                         save_img(
                             &img[0],
                             (size as usize, size as usize),
-                            &format!("{}_{}.{}", output, t, ext),
+                            &format!("{}_{}.{}", output, nb_iterations+1, ext),
                         );
 
                         if fft {
@@ -276,31 +244,41 @@ fn main() {
                             save_img(
                                 &fft_r[..],
                                 (size as usize, size as usize),
-                                &format!("{}_fft_{}.{}", output, t, ext),
+                                &format!("{}_fft_{}.{}", output, nb_iterations+1, ext),
                             );
                         }
                     }
                 }
             }
+
+            // Make the cooling factor independent to the image size
+            let total_swaps = nb_iterations * nb_moves_per_iteration;
+            let total_swaps_norm = total_swaps as f64 / ((size * size) as f64).sqrt();
+            let cooling_factor = (1.0_f64 - cooling_rate).powf(total_swaps_norm);
+
             // Shuffle the pair
             // At each iteration, all pixel will have a swap attempt
-            index_2d.shuffle(&mut rng);
             info!(
                 "[{}/{}] \t Energy: {} \t Temp: {}",
-                t + 1,
+                nb_iterations+1,
                 iteration,
                 energy,
-                temp
+                cooling_factor * temperature
             );
-            let mut accepted_moves = 0;
-            // Important: We only swap pair on the same dimension
-            // indeed, otherwise, the distribution can change in different dimension
-            // leading to problem when optimizing large dimension mask.
-            // Note that the optimization procedure will be less effective when
-            // the dimension of the mask increases
-            for chunk in index_2d.chunks_exact(2) {
-                let p_1 = (chunk[0].0, chunk[0].1);
-                let p_2 = (chunk[1].0, chunk[1].1);
+
+            // Do the swapping in 2D
+            let mut nb_accepted_move = 0;
+            for _ in 0..(size*size) {
+                // Generate two random different 2D coordinate 
+                let p_1 = (rng.gen_range(0..size), rng.gen_range(0..size));
+                let p_2 = {
+                    let mut p_2 = (rng.gen_range(0..size), rng.gen_range(0..size));
+                    while p_1.0 == p_2.0 && p_1.1 == p_2.1 {
+                        p_2 = (rng.gen_range(0..size), rng.gen_range(0..size));
+                    }
+                    p_2
+                };
+                
                 // Compute the new and old energy if we was doing the swap
                 let res = pool.install(|| {
                     dithering_mask::energy_diff_pair(
@@ -312,37 +290,34 @@ fn main() {
                         &pixels[get_index(p_2)],
                     )
                 });
+                
                 let delta = res.new - res.org;
-                let delta_abs = delta.abs();
-                let accept = if delta < 0.0 {
-                    true
-                } else {
-                    // Compute acceptence probability with temperature
-                    let a = (-delta_abs / (delta_avg * temp)).exp();
-                    a >= rng.gen_range(0.0..1.0)
-                };
-
+                let accept_prob = (- delta as f64 / (cooling_factor * temperature)).exp();
                 // If we want to do the swap
-                if accept {
+                if accept_prob > rng.gen_range(0.0..1.0) {
                     // Swap img values
                     let tmp = pixels[get_index(p_1)].v.clone();
                     pixels[get_index(p_1)].v = pixels[get_index(p_2)].v.clone();
                     pixels[get_index(p_2)].v = tmp;
                     // Update the state
                     energy += delta;
-                    accepted_moves += 1;
-                    delta_avg = (delta_avg * accepted_moves as f32 + delta_abs)
-                        / (accepted_moves + 1) as f32;
+                    nb_accepted_move += 1;
                 }
                 
             }
 
+            let acceptance_rate = nb_accepted_move as f32 / nb_moves_per_iteration as f32;
+            if nb_iterations == 0 && acceptance_rate > 0.40 {
+                info!("Decrease the inital temperature... Retry the first iteration!");
+                temperature *= 0.5;
+            } else if acceptance_rate > 0.0 {
+                nb_iterations += 1;
+            }
+
             // Update temperature for the next iteration
-            temp *= frac;
             info!(
-                "Accept rate: {} \t Delta Avg: {} \t Time: {} sec",
-                (accepted_moves as f32 / (pixels.len()) as f32 * 50.0),
-                delta_avg,
+                "Accept rate: {} \t Time: {} sec",
+                acceptance_rate * 100.0,
                 now.elapsed().as_secs_f32()
             );
         }
