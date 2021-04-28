@@ -17,10 +17,3 @@ clap = "*"
 image = "*"
 rayon = "*"
 pbr = "*"
-
-[dev-dependencies]
-criterion = "*"
-
-[[bench]]
-name = "energy"
-harness = false

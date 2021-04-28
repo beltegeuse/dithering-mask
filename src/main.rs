@@ -89,6 +89,47 @@ pub fn save_ldr_image_2d(r: &[f32], g: &[f32], size: (usize, usize), imgout_path
         .save(&Path::new(imgout_path_str))
         .expect("failed to write img into file");
 }
+fn save_pfm_3d(r: &[f32], g: &[f32], b: &[f32], size: (usize, usize), imgout_path_str: &str) {
+    let file = File::create(Path::new(imgout_path_str)).unwrap();
+    let mut file = BufWriter::new(file);
+    let header = format!("PF\n{} {}\n-1.0\n", size.0, size.1);
+    file.write_all(header.as_bytes()).unwrap();
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let p_r = r[y * size.0 + x];
+            let p_g = g[y * size.0 + x];
+            let p_b = b[y * size.0 + x];
+            
+            file.write_f32::<LittleEndian>(p_r.abs()).unwrap();
+            file.write_f32::<LittleEndian>(p_g.abs()).unwrap();
+            file.write_f32::<LittleEndian>(p_b.abs()).unwrap();
+        }
+    }
+}
+pub fn save_ldr_image_3d(r: &[f32], g: &[f32], b: &[f32], size: (usize, usize), imgout_path_str: &str) {
+    let mut image_ldr = DynamicImage::new_rgb8(size.0 as u32, size.1 as u32);
+    for x in 0..size.0 {
+        for y in 0..size.1 {
+            let r_v = r[y * size.0 + x];
+            let g_v = g[y * size.0 + x];
+            let b_v = b[y * size.0 + x];
+            image_ldr.put_pixel(
+                x as u32,
+                y as u32,
+                Rgba::from_channels(
+                    (r_v.min(1.0) * 255.0) as u8,
+                    (g_v.min(1.0) * 255.0) as u8,
+                    (b_v.min(1.0) * 255.0) as u8,
+                    255,
+                ),
+            );
+        }
+    }
+    image_ldr
+        .save(&Path::new(imgout_path_str))
+        .expect("failed to write img into file");
+}
+
 
 fn main() {
     // Setup logger
@@ -167,6 +208,12 @@ fn main() {
     } else {
         save_pfm_2d
     };
+    let save_img_3d = if matches.is_present("png") {
+        save_ldr_image_3d
+    } else {
+        save_pfm_3d
+    };
+
     // -- Optimization
     let iteration = value_t_or_exit!(matches.value_of("iteration"), i32);
 
@@ -227,6 +274,28 @@ fn main() {
                             save_img_2d(
                                 &fft_r[..],
                                 &fft_g[..],
+                                (size as usize, size as usize),
+                                &format!("{}_fft_{}.{}", output, nb_iterations+1, ext),
+                            );
+                        }
+                    } else if dimension == 3 {
+                        save_img_3d(
+                            &img[0],
+                            &img[1],
+                            &img[2],
+                            (size as usize, size as usize),
+                            &format!("{}_{}.{}", output, nb_iterations+1, ext),
+                        );
+
+                        if fft {
+                            let fft_r = dithering_mask::fft::fft2d(&img[0], size as usize);
+                            let fft_g = dithering_mask::fft::fft2d(&img[1], size as usize);
+                            let fft_b = dithering_mask::fft::fft2d(&img[2], size as usize);
+                            
+                            save_img_3d(
+                                &fft_r[..],
+                                &fft_g[..],
+                                &fft_b[..],
                                 (size as usize, size as usize),
                                 &format!("{}_fft_{}.{}", output, nb_iterations+1, ext),
                             );
@@ -310,7 +379,7 @@ fn main() {
             if nb_iterations == 0 && acceptance_rate > 0.40 {
                 info!("Decrease the inital temperature... Retry the first iteration!");
                 temperature *= 0.5;
-            } else if acceptance_rate > 0.0 {
+            } else if acceptance_rate >= 0.0 {
                 nb_iterations += 1;
             }
 
@@ -358,6 +427,29 @@ fn main() {
                 save_img_2d(
                     &fft_r,
                     &fft_g,
+                    (size as usize, size as usize),
+                    &format!("{}_fft.{}", output, ext),
+                );
+            }
+        }
+        3 => {
+            save_img_3d(
+                &img[0],
+                &img[1],
+                &img[2],
+                (size as usize, size as usize),
+                &format!("{}.{}", output, ext),
+            );
+
+            if fft {
+                let fft_r = dithering_mask::fft::fft2d(&img[0], size as usize);
+                let fft_g = dithering_mask::fft::fft2d(&img[1], size as usize);
+                let fft_b = dithering_mask::fft::fft2d(&img[2], size as usize);
+                
+                save_img_3d(
+                    &fft_r[..],
+                    &fft_g[..],
+                    &fft_b[..],
                     (size as usize, size as usize),
                     &format!("{}_fft.{}", output, ext),
                 );
